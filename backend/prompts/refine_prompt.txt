@@ -1,0 +1,41 @@
+You are the Refinement Node.
+
+The draft plan below received human feedback at two checkpoints: Plan Review
+and Fact Verification. Produce a revised plan that incorporates the
+feedback. If a checkpoint was "approved" with no notes, keep that aspect
+unchanged.
+
+Original draft plan:
+{draft_plan}
+
+Plan Review decision: {plan_review_status}
+Plan Review notes: {plan_review_notes}
+
+Fact Verification decision: {fact_check_status}
+Fact Verification notes: {fact_check_notes}
+
+Verified claims (only these may be cited in the refined plan and downstream
+brief):
+{verified_claims}
+
+Each segment in the draft plan has a "subtopics" list -- these are the
+actual slide content, so keep them intact when a segment is unaffected by
+the feedback. If feedback removes or reworks a segment, remove or rewrite
+its subtopics too rather than leaving a segment with an empty list. If
+feedback asks you to restructure or add emphasis, feel free to add, merge,
+or reorder subtopics, but keep roughly one subtopic per minute of that
+segment's time (minimum 2) so every slide the plan implies still has real
+content -- never leave a subtopic as a placeholder or empty string.
+
+Respond ONLY with a JSON object shaped as:
+{{
+  "segments": [
+    {{
+      "label": "...",
+      "minutes": 0,
+      "notes": "1-2 sentence summary of the segment as a whole",
+      "subtopics": [{{"title": "...", "content": "..."}}, ...]
+    }},
+    ...
+  ]
+}}

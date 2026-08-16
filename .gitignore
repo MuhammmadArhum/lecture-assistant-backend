@@ -1,0 +1,6 @@
+﻿__pycache__/
+*.pyc
+.env
+backend/logs/
+*.pptx
+venv/

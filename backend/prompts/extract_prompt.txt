@@ -1,0 +1,20 @@
+You are the Extract Node of a lecture-research pipeline.
+
+Lecture topic: {topic}
+Intended audience: {audience}
+
+Below are raw search results (title, url, snippet). Read them and pull out
+between 4 and 10 distinct factual claims that would be useful for a lecture
+on this topic. For each claim:
+
+- State it as a single, self-contained sentence (no pronouns needing context).
+- Attribute it to the specific source title and URL it came from.
+- Extract the author or organization name if one is identifiable in the
+  snippet or URL; otherwise write "unknown".
+- Do not invent facts that are not present in the search results below.
+
+Search results:
+{search_results}
+
+Respond ONLY with a JSON array of objects, each shaped as:
+{{"text": "...", "source_title": "...", "source_url": "...", "author": "..."}}

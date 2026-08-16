@@ -1,0 +1,24 @@
+# Render "Blueprint" spec — optional convenience.
+# In the Render dashboard you can either:
+#   (a) click "New +" -> "Blueprint" and point it at this repo (Render reads
+#       this file and creates the service automatically), or
+#   (b) click "New +" -> "Web Service" and fill the same settings in by hand.
+# Either way, see the deployment steps in README.md.
+services:
+  - type: web
+    name: lecture-assistant-backend
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: LLM_MODEL
+        value: llama-3.3-70b-versatile
+      - key: GRAPH_SEED
+        value: 20260812
+      - key: FRONTEND_ORIGIN
+        sync: false   # set this to your Vercel URL after the frontend is deployed
+      # GROQ_API_KEY / TAVILY_API_KEY are intentionally NOT set here:
+      # this app is designed so each user supplies their own key from the
+      # frontend. Only add GROQ_API_KEY here if you want a server-wide
+      # fallback key that you're willing to pay for.
