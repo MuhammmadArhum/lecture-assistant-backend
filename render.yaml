@@ -13,7 +13,7 @@ services:
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: LLM_MODEL
-        value: llama-3.3-70b-versatile
+        value: openai/gpt-oss-120b
       - key: GRAPH_SEED
         value: 20260812
       - key: FRONTEND_ORIGIN
