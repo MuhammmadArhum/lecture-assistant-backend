@@ -44,7 +44,7 @@ def _get_client(api_key: str | None = None) -> Groq:
 
 def model_settings() -> dict[str, Any]:
     return {
-        "model": os.environ.get("LLM_MODEL", "llama-3.3-70b-versatile"),
+        "model": os.environ.get("LLM_MODEL", "openai/gpt-oss-120b"),
         # Raised from a fixed 0 so segment/subtopic wording varies instead
         # of reading stiff and repetitive -- still low enough to stay
         # on-topic and keep the JSON structure the prompts demand. Override
