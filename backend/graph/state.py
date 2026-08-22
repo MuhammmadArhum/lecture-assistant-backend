@@ -110,3 +110,13 @@ class LectureState(TypedDict, total=False):
     # --- User-supplied API keys (per-request, never persisted to disk) ---
     groq_api_key: Optional[str]
     tavily_api_key: Optional[str]
+
+    # --- Gamma-style one-shot mode ---
+    # When true, the two HITL checkpoint nodes below auto-fill the
+    # "everything looks good" decision instead of calling interrupt(), so
+    # the whole graph runs start-to-finish without pausing. Off by default
+    # -- the real human-in-the-loop review is still the default behavior.
+    auto_approve: Optional[bool]
+
+    # --- Selected deck theme (see backend/themes.py), used at export time ---
+    theme: Optional[str]
