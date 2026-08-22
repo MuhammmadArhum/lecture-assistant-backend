@@ -34,8 +34,13 @@ def hitl_plan_review_node(state: LectureState) -> dict:
         ],
     }
 
-    # Execution pauses here until /resume sends a decision.
-    decision = interrupt(payload)
+    if state.get("auto_approve"):
+        # Gamma-style one-shot mode: skip the pause entirely and proceed as
+        # drafted, same as a human picking "confirm".
+        decision = {"status": "confirm", "notes": "Auto-approved (one-shot mode)"}
+    else:
+        # Execution pauses here until /resume sends a decision.
+        decision = interrupt(payload)
 
     status = decision.get("status", "confirm")
     notes = decision.get("notes")
