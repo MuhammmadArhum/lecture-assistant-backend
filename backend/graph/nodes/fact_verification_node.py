@@ -41,7 +41,12 @@ def fact_verification_node(state: LectureState) -> dict:
         ],
     }
 
-    decision = interrupt(payload)
+    if state.get("auto_approve"):
+        # Gamma-style one-shot mode: skip the pause and accept every shown
+        # claim, same as a human picking "accept_all".
+        decision = {"status": "accept_all", "notes": "Auto-approved (one-shot mode)"}
+    else:
+        decision = interrupt(payload)
 
     status = decision.get("status", "accept_all")
     notes = decision.get("notes")
