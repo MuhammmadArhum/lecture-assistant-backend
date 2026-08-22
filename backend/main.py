@@ -17,9 +17,10 @@ from pydantic import BaseModel
 
 load_dotenv()
 
-from backend.export.pptx_builder import build_pptx  # noqa: E402
+from backend.export.pptx_builder import build_pptx, build_slide_plan  # noqa: E402
 from backend.graph.build_graph import compiled_graph  # noqa: E402
 from backend.logging_utils import read_run_log  # noqa: E402
+from backend.themes import DEFAULT_THEME, get_theme, list_themes  # noqa: E402
 
 app = FastAPI(title="Lecture-Assistant Agent")
 
@@ -49,6 +50,10 @@ class StartRunRequest(BaseModel):
     # the lifetime of the run.
     groq_api_key: str | None = None
     tavily_api_key: str | None = None
+    # Gamma-style controls: pick a deck theme up front, and optionally skip
+    # both HITL checkpoints for a true one-shot "prompt -> deck" run.
+    theme: str = DEFAULT_THEME
+    auto_approve: bool = False
 
 
 class ResumeRequest(BaseModel):
@@ -56,6 +61,13 @@ class ResumeRequest(BaseModel):
     status: str
     notes: str | None = None
     accepted_ids: list[str] | None = None
+
+
+class DeckRequest(BaseModel):
+    """Shared body shape for /preview and /export/pptx: the brief plus
+    which theme to render it in."""
+    brief: dict
+    theme: str = DEFAULT_THEME
 
 
 def _extract_interrupt(result: dict) -> dict | None:
@@ -76,6 +88,7 @@ def _run_response(thread_id: str, result: dict) -> dict:
         "status": "complete",
         "final_brief": result.get("final_brief"),
         "formatted_brief_markdown": result.get("formatted_brief_markdown"),
+        "theme": result.get("theme", DEFAULT_THEME),
     }
 
 
@@ -100,6 +113,8 @@ def start_run(req: StartRunRequest):
             "thread_id": thread_id,
             "groq_api_key": req.groq_api_key,
             "tavily_api_key": req.tavily_api_key,
+            "theme": req.theme,
+            "auto_approve": req.auto_approve,
         },
         config=config,
     )
@@ -137,9 +152,23 @@ def get_logs(thread_id: str):
     return {"thread_id": thread_id, "entries": read_run_log(thread_id)}
 
 
+@app.get("/themes")
+def themes():
+    return {"themes": list_themes(), "default": DEFAULT_THEME}
+
+
+@app.post("/preview")
+def preview_deck(req: DeckRequest):
+    """Slide-by-slide JSON (no binary) for the frontend's Gamma-style deck
+    preview -- same content/ordering the real .pptx export will use."""
+    theme = get_theme(req.theme)
+    slides = build_slide_plan(req.brief)
+    return {"theme": theme, "slides": slides}
+
+
 @app.post("/export/pptx")
-def export_pptx(brief: dict):
-    buffer = build_pptx(brief)
+def export_pptx(req: DeckRequest):
+    buffer = build_pptx(req.brief, theme=req.theme)
     filename = "lecture-brief.pptx"
     return StreamingResponse(
         buffer,
