@@ -1,17 +1,25 @@
 """
 Builds a themed .pptx from a Final Brief JSON object.
 
-Design system: dark "modern SaaS deck" theme (near-black background, bold
-off-white headings, a rotating trio of vivid accent colors, card-panel
-content blocks, numbered chips, and small tag labels instead of plain
-bullet lists) modeled after an instructor-approved reference deck. Kept
-isolated from main.py per the assignment's module-separation requirement.
-Every key-finding citation is still carried through onto its slide.
+Design system: card-panel content blocks, numbered chips, and small tag
+labels instead of plain bullet lists, with the actual color palette pulled
+from `backend.themes` (a handful of presets -- Midnight/Daylight/Sunset/
+Ocean/Forest/Slate) so the user can pick a look the way Gamma lets you pick
+a theme before generating. Kept isolated from main.py per the assignment's
+module-separation requirement. Every key-finding citation is still carried
+through onto its slide.
+
+`build_slide_plan()` re-uses the same pure-python content-assembly helpers
+(_segment_content_units / _build_segment_slides / _chunk) to hand back a
+JSON-serializable slide-by-slide plan with no python-pptx objects in it --
+this is what powers the frontend's in-browser deck preview, and it is kept
+in lockstep with `build_pptx()` by construction (same helpers, same order).
 """
 from __future__ import annotations
 
 import io
 import re
+import threading
 from typing import Any
 
 from pptx import Presentation
@@ -22,22 +30,41 @@ from pptx.util import Inches, Pt, Emu
 from pptx.oxml import parse_xml
 from pptx.oxml.ns import qn, nsdecls
 
-# --- Palette ---------------------------------------------------------------
-# Dark charcoal base (not pure black -- reads as "designed", not "no theme
-# applied"), off-white ink for headings, a softer lavender-gray for body
-# text, and three vivid accents rotated across cards/chips so a long deck
-# stays visually varied without breaking the single cohesive palette.
-BACKGROUND = RGBColor(0x18, 0x18, 0x1F)   # near-black charcoal
-CARD_BG = RGBColor(0x23, 0x23, 0x2C)      # card panel, one step lighter
-CARD_BG_ALT = RGBColor(0x2A, 0x2A, 0x35)  # slightly lighter alt panel
-INK = RGBColor(0xF7, 0xF4, 0xFA)          # near-white heading/primary text
-MUTED = RGBColor(0xAF, 0xA9, 0xBC)        # muted lavender-gray body/citation text
-CHIP_TEXT = RGBColor(0x17, 0x17, 0x1D)    # near-black text used on top of accent fills
+from backend.themes import DEFAULT_THEME, get_theme
 
-ACCENT = RGBColor(0xFF, 0x6B, 0xD8)       # vivid magenta -- primary accent
-ACCENT2 = RGBColor(0x8C, 0x7C, 0xFF)      # soft electric violet -- secondary
-ACCENT3 = RGBColor(0x45, 0xE6, 0xC4)      # mint/teal -- tertiary
-_ACCENTS = [ACCENT, ACCENT2, ACCENT3]
+# --- Palette -----------------------------------------------------------
+# These module-level colors are the *active* theme's palette. They start
+# out as the default theme and are reassigned by `_apply_theme()` right
+# before each build_pptx()/build_slide_plan() call -- every place below
+# that needs a color reads one of these names directly (not as a stale
+# function-default value; see the `color=None` + in-body resolution
+# pattern used by _text/_accent_bar/_title_box/_header/_text_slide) so a
+# theme switch actually takes effect. A module-level lock serializes
+# builds so two concurrent requests with different themes can't race.
+_BUILD_LOCK = threading.Lock()
+
+
+def _hex_to_rgb(hex_str: str) -> RGBColor:
+    h = (hex_str or "#000000").lstrip("#")
+    return RGBColor(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+def _apply_theme(theme_id: str | None) -> dict:
+    theme = get_theme(theme_id)
+    g = globals()
+    g["BACKGROUND"] = _hex_to_rgb(theme["background"])
+    g["CARD_BG"] = _hex_to_rgb(theme["card_bg"])
+    g["CARD_BG_ALT"] = _hex_to_rgb(theme["card_bg_alt"])
+    g["INK"] = _hex_to_rgb(theme["ink"])
+    g["MUTED"] = _hex_to_rgb(theme["muted"])
+    g["CHIP_TEXT"] = _hex_to_rgb(theme["chip_text"])
+    accents = [_hex_to_rgb(c) for c in theme["accents"]]
+    g["ACCENT"], g["ACCENT2"], g["ACCENT3"] = accents[0], accents[1], accents[2]
+    g["_ACCENTS"] = accents
+    g["TITLE_FONT"] = theme.get("title_font") or g.get("TITLE_FONT", "Segoe UI Semibold")
+    g["LABEL_FONT"] = theme.get("label_font") or g.get("LABEL_FONT", "Consolas")
+    g["BODY_FONT"] = theme.get("body_font") or g.get("BODY_FONT", "Segoe UI")
+    return theme
 
 
 def _accent_for(i: int) -> RGBColor:
@@ -47,9 +74,9 @@ def _accent_for(i: int) -> RGBColor:
 SLIDE_W = Inches(13.333)
 SLIDE_H = Inches(7.5)
 
-TITLE_FONT = "Segoe UI Semibold"
-LABEL_FONT = "Consolas"       # monospace -- tag chips, numbered chips, eyebrow labels
-BODY_FONT = "Segoe UI"
+# Seed the module-level palette/fonts with the default theme so anything
+# imported before the first real build_pptx() call still has valid colors.
+_apply_theme(DEFAULT_THEME)
 
 # --- Dynamic slide count -------------------------------------------------
 # Calibrated against two instructor-given reference points:
@@ -255,9 +282,17 @@ def _oval(slide, left, top, diameter, fill: RGBColor):
     return shape
 
 
-def _text(box_or_tf, text, *, size=18, color=INK, bold=False, italic=False,
-          font=BODY_FONT, align=None, first=True, space_after=6,
+def _text(box_or_tf, text, *, size=18, color=None, bold=False, italic=False,
+          font=None, align=None, first=True, space_after=6,
           hyperlink: str | None = None, underline: bool = False):
+    # color/font default to the *current* theme's INK/BODY_FONT -- resolved
+    # here (a live global lookup) rather than as literal default-argument
+    # values, which would freeze onto whatever theme was active at import
+    # time and never update when _apply_theme() switches themes.
+    if color is None:
+        color = INK
+    if font is None:
+        font = BODY_FONT
     tf = box_or_tf if hasattr(box_or_tf, "add_paragraph") else box_or_tf.text_frame
     p = tf.paragraphs[0] if (first and len(tf.paragraphs) == 1 and not tf.paragraphs[0].runs) else tf.add_paragraph()
     run = p.add_run()
@@ -331,11 +366,15 @@ def _numbered_chip(slide, label: str, left, top, color, diameter=Inches(0.5)):
     return chip
 
 
-def _accent_bar(slide, left, top, width=Inches(0.9), height=Inches(0.07), color=ACCENT):
+def _accent_bar(slide, left, top, width=Inches(0.9), height=Inches(0.07), color=None):
+    if color is None:
+        color = ACCENT
     return _rect(slide, left, top, width, height, fill=color)
 
 
-def _title_box(slide, text: str, top=Inches(0.95), size=30, color=INK, width=Inches(11.9), left=Inches(0.7)):
+def _title_box(slide, text: str, top=Inches(0.95), size=30, color=None, width=Inches(11.9), left=Inches(0.7)):
+    if color is None:
+        color = INK
     box = slide.shapes.add_textbox(left, top, width, Inches(1.1))
     tf = box.text_frame
     tf.word_wrap = True
@@ -348,8 +387,10 @@ def _title_box(slide, text: str, top=Inches(0.95), size=30, color=INK, width=Inc
     return box
 
 
-def _header(slide, eyebrow: str, title: str, accent: RGBColor = ACCENT, title_size=30):
+def _header(slide, eyebrow: str, title: str, accent: RGBColor = None, title_size=30):
     """Standard slide header: tag chip + title + thin accent bar underneath."""
+    if accent is None:
+        accent = ACCENT
     _tag_chip(slide, eyebrow, left=Inches(0.7), top=Inches(0.5), color=accent)
     _title_box(slide, title, top=Inches(1.0), size=title_size)
     _accent_bar(slide, Inches(0.7), Inches(1.82), width=Inches(0.9), color=accent)
@@ -400,7 +441,9 @@ def _title_slide(prs: Presentation, brief: dict[str, Any]):
         )
 
 
-def _text_slide(prs: Presentation, eyebrow: str, title: str, body: str, accent: RGBColor = ACCENT):
+def _text_slide(prs: Presentation, eyebrow: str, title: str, body: str, accent: RGBColor = None):
+    if accent is None:
+        accent = ACCENT
     slide = _blank_slide(prs)
     _header(slide, eyebrow, title, accent=accent)
 
@@ -600,7 +643,14 @@ def _build_segment_slides(segments: list[dict[str, Any]], slide_budget: int) -> 
     return entries
 
 
-def build_pptx(brief: dict[str, Any]) -> io.BytesIO:
+def build_pptx(brief: dict[str, Any], theme: str | None = None) -> io.BytesIO:
+    with _BUILD_LOCK:
+        return _build_pptx_locked(brief, theme)
+
+
+def _build_pptx_locked(brief: dict[str, Any], theme: str | None) -> io.BytesIO:
+    _apply_theme(theme or brief.get("theme"))
+
     prs = Presentation()
     prs.slide_width = SLIDE_W
     prs.slide_height = SLIDE_H
@@ -669,3 +719,106 @@ def build_pptx(brief: dict[str, Any]) -> io.BytesIO:
     prs.save(buffer)
     buffer.seek(0)
     return buffer
+
+
+def build_slide_plan(brief: dict[str, Any]) -> list[dict[str, Any]]:
+    """Pure-data mirror of build_pptx()'s slide assembly (no python-pptx
+    objects), for the frontend's in-browser deck preview. Shares the same
+    _segment_content_units/_build_segment_slides/_chunk helpers and the
+    same ordering so the preview never drifts from the real export.
+
+    Each slide dict has a "kind" of "title" | "text" | "focus" | "cards" |
+    "appendix", plus an "accent_index" (0/1/2) the frontend maps onto the
+    chosen theme's 3 accent colors, matching the rotation _accent_for()
+    uses in the real render.
+    """
+    target_total = _target_slide_count(brief.get("target_minutes"))
+
+    introduction = (brief.get("introduction") or "").strip()
+    summary = brief.get("summary", "")
+    segments = brief.get("segments") or []
+    findings = brief.get("key_findings", [])
+    risks = brief.get("risks", [])
+    reading = brief.get("further_reading", [])
+    node_trace = brief.get("node_trace")
+
+    fixed_front = 1 + (1 if introduction else 0) + 1
+    findings_chunks = _chunk(findings, size=4) if findings else []
+    risk_chunks = _chunk(risks, size=4) if risks else []
+    reading_chunks = _chunk(reading, size=4) if reading else []
+    appendix_count = 1 if node_trace else 0
+    tail_count = len(findings_chunks) + len(risk_chunks) + len(reading_chunks) + appendix_count
+
+    segment_budget = max(0, target_total - fixed_front - tail_count)
+    segment_entries = _build_segment_slides(segments, segment_budget)
+
+    slides: list[dict[str, Any]] = []
+
+    slides.append({
+        "kind": "title",
+        "eyebrow": "Lecture Brief",
+        "title": brief.get("title", "Untitled Lecture"),
+        "subtitle": f'{brief.get("target_minutes")}-minute session' if brief.get("target_minutes") else None,
+    })
+
+    if introduction:
+        slides.append({
+            "kind": "text", "eyebrow": "Part 1", "title": "Introduction",
+            "body": _clean_slide_text(introduction, max_chars=1000), "accent_index": 0,
+        })
+
+    slides.append({
+        "kind": "text", "eyebrow": "Part 2", "title": "Summary",
+        "body": _clean_slide_text(summary or "", max_chars=1000), "accent_index": 1,
+    })
+
+    n_segment_slides = len(segment_entries)
+    for i, entry in enumerate(segment_entries, start=1):
+        seg = entry["segment"]
+        units = entry["units"]
+        eyebrow = f"Part 3 · {i}/{n_segment_slides}"
+        accent_index = (i - 1) % 3
+        if len(units) == 1:
+            slides.append({
+                "kind": "focus", "eyebrow": eyebrow, "index": i,
+                "title": units[0]["title"] or seg.get("label", ""),
+                "body": _clean_slide_text(units[0]["content"]),
+                "accent_index": accent_index,
+            })
+        else:
+            cards = [
+                {"heading": _clean_slide_text(u["title"], max_chars=70),
+                 "body": _clean_slide_text(u["content"], max_chars=220)}
+                for u in units
+            ]
+            slides.append({
+                "kind": "cards", "eyebrow": eyebrow,
+                "title": seg.get("label", "Untitled segment"), "cards": cards, "columns": 2,
+            })
+
+    for chunk in findings_chunks:
+        cards = [
+            {
+                "heading": (f.get("citation", "").split(" (")[0].strip() or "Finding"),
+                "body": _clean_slide_text(f.get("text", ""), max_chars=220),
+                "footer": f.get("citation", ""),
+            }
+            for f in chunk
+        ]
+        slides.append({"kind": "cards", "eyebrow": "Part 4", "title": "Key Findings", "cards": cards, "columns": 2})
+
+    for chunk in risk_chunks:
+        cards = [{"heading": "Risk", "body": _clean_slide_text(r, max_chars=220)} for r in chunk]
+        slides.append({"kind": "cards", "eyebrow": "Part 5", "title": "Risks", "cards": cards, "columns": 2})
+
+    for chunk in reading_chunks:
+        cards = [
+            {"heading": item.get("title", ""), "body": item.get("url", ""), "url": _normalize_url(item.get("url", ""))}
+            for item in chunk
+        ]
+        slides.append({"kind": "cards", "eyebrow": "Part 6", "title": "Further Reading", "cards": cards, "columns": 2})
+
+    if node_trace:
+        slides.append({"kind": "appendix", "eyebrow": "Appendix", "title": "Node Trace", "trace": node_trace[:12]})
+
+    return slides
